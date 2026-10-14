@@ -46,3 +46,13 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Pre-change backups (contains duplicate .pkl artifacts)
+backups/
+
+# Paper / reference material (large binary, not project source)
+paper6.pdf
+
+# Evaluation-experiment scratch artifacts and generated figures
+notebooks/_eval_cache/
+notebooks/figures/

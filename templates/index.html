@@ -17,15 +17,25 @@
         Predict Water Quality Index using Machine Learning
     </p>
 
-    <form method="POST">
+{% if errors %}
 
-        <label>Temperature</label>
-        <input type="number" step="any" name="Temp" required>
+<div class="form-errors">
+    <strong>Please correct the following:</strong>
+    <ul>
+        {% for e in errors %}
+        <li>{{ e }}</li>
+        {% endfor %}
+    </ul>
+</div>
+
+{% endif %}
+
+    <form method="POST">
 
         <label>Dissolved Oxygen (mg/L)</label>
         <input type="number" step="any" name="DO" required>
 
-        <label>pH</label>
+        <label>pH (0 - 14)</label>
         <input type="number" step="any" name="PH" required>
 
         <label>Conductivity (µmhos/cm)</label>
@@ -52,12 +62,91 @@
 <div class="result">
 
     <div class="wqi">
-        Predicted WQI: {{ prediction }}
+        Predicted WQI (0-100 scale): {{ prediction }}
     </div>
 
-    <div class="category">
-        Water Quality Category: {{ category }}
-    </div>
+    <p class="wqi-note">
+        The Water Quality Index is a single aggregate value computed with
+        this project's discrete rating-band methodology. It is a screening
+        indicator of overall quality, <strong>not</strong> a per-parameter
+        regulatory verdict and <strong>not</strong> a potability
+        certification (a lower value indicates better quality in this
+        scheme).
+    </p>
+
+</div>
+
+<div class="assessment">
+
+    <h2>Parameter guideline assessment (IS 10500:2012)</h2>
+
+    <p class="assessment-note">
+        Each parameter below is checked individually against the applicable
+        BIS drinking-water limit (IS 10500:2012). This table is separate from
+        the WQI above, does <strong>not</strong> certify that the water is
+        safe to drink, and is <strong>not</strong> a WQI classification.
+        Parameters that IS 10500 does not cover for drinking water, or whose
+        unit/method basis differs from the standard, are shown as
+        &quot;Not assessed&quot;.
+    </p>
+
+    <table class="assessment-table">
+        <thead>
+            <tr>
+                <th>Parameter</th>
+                <th>Input value</th>
+                <th>Unit</th>
+                <th>Status</th>
+                <th>Reference / reason</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in assessments %}
+            <tr>
+                <td>{{ a.label }}</td>
+                <td>{{ a.value if a.value is not none else "—" }}</td>
+                <td>{{ a.unit }}</td>
+                <td class="status-{{ a.status }}">
+                    {% if a.status == "within" %}Within guideline
+                    {% elif a.status == "outside" %}Outside guideline
+                    {% else %}Not assessed{% endif %}
+                </td>
+                <td>{{ a.note }} ({{ a.provenance }})</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+</div>
+
+<div class="shap">
+
+    <h2>Feature contributions (SHAP)</h2>
+
+    <p class="shap-note">
+        Each value is how far that parameter moved the prediction away
+        from the model's average WQI (base value = {{ base | round(2) }}).
+        Positive raises the index, negative lowers it.
+    </p>
+
+    <table class="shap-table">
+        <thead>
+            <tr>
+                <th>Parameter</th>
+                <th>Input value</th>
+                <th>Contribution to WQI</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for c in contribs %}
+            <tr>
+                <td>{{ c.label }}</td>
+                <td>{{ c.value }}</td>
+                <td>{{ "%+.2f" | format(c.contribution) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
 
 </div>
 
@@ -65,7 +154,7 @@
 
     <h2>🤖 AI Water Quality Explanation</h2>
 
-    <h3>Why is the water quality {{ category }}?</h3>
+    <h3>What does this WQI value indicate?</h3>
 
     <p>{{ explanation }}</p>
 

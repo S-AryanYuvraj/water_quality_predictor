@@ -1,0 +1,18 @@
+# Core runtime dependencies (Flask application + prediction)
+Flask==3.1.3
+pandas==3.0.5
+numpy==2.5.2
+scikit-learn==1.9.0
+shap==0.52.0
+joblib==1.5.3
+requests==2.34.2
+
+# Used by the training notebook (EDA plots and headless execution)
+matplotlib==3.11.1
+seaborn==0.13.2
+nbconvert==7.17.1
+jupyter==1.1.1
+
+# NOTE: xgboost and catboost are intentionally NOT required.
+# Paper 6 uses a six-model stacked ensemble; this project keeps its own
+# four-regressor comparison and does not claim to reproduce that stack.
