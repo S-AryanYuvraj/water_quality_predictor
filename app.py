@@ -7,6 +7,8 @@ import pandas as pd
 import shap
 import requests
 
+import wawqi
+
 app = Flask(__name__)
 
 # ============================================================
@@ -26,13 +28,14 @@ assert model.n_features_in_ == len(features), (
 # SHAP explainer
 explainer = shap.TreeExplainer(model)
 
-# Form field name -> dataset column name
+# Form field name -> dataset column name (the 7 Brown WAWQI parameters).
 FIELD_MAP = {
     "DO": "D.O. (mg/l)",
     "PH": "PH",
     "Conductivity": "CONDUCTIVITY (\u00b5mhos/cm)",
     "BOD": "B.O.D. (mg/l)",
     "Nitrate": "NITRATENAN N+ NITRITENANN (mg/l)",
+    "FecalColiform": "FECAL COLIFORM (MPN/100ml)",
     "Coliform": "TOTAL COLIFORM (MPN/100ml)Mean",
 }
 
@@ -41,108 +44,75 @@ LABELS = {
     "PH": "pH",
     "CONDUCTIVITY (\u00b5mhos/cm)": "Conductivity (\u00b5mhos/cm)",
     "B.O.D. (mg/l)": "BOD (mg/l)",
-    "NITRATENAN N+ NITRITENANN (mg/l)": "Nitrate + Nitrite (mg/l)",
+    "NITRATENAN N+ NITRITENANN (mg/l)": "Nitrate + Nitrite (mg/l as N)",
+    "FECAL COLIFORM (MPN/100ml)": "Fecal Coliform (MPN/100ml)",
     "TOTAL COLIFORM (MPN/100ml)Mean": "Total Coliform (MPN/100ml)",
 }
 
-# Acceptable input ranges.
-# pH is bounded on both sides (the scale itself is 0-14, and the training
-# data discarded out-of-range pH). Every other parameter is a concentration
-# or count, so only non-negativity is enforced. Deliberately NO invented
-# upper caps: the raw data legitimately contains values far above
-# regulatory limits, and the rating bands already map those to 0.
+# Acceptable input ranges. The WAWQI sub-index handles out-of-standard values
+# (clipped to [0, 100]), so the form only rejects NON-PHYSICAL inputs: pH is
+# bounded to the physical 0-14 scale, everything else is a concentration or
+# count and must simply be non-negative. No invented upper caps.
 RANGES = {
     "PH": (0.0, 14.0),
     "D.O. (mg/l)": (0.0, None),
     "CONDUCTIVITY (\u00b5mhos/cm)": (0.0, None),
     "B.O.D. (mg/l)": (0.0, None),
     "NITRATENAN N+ NITRITENANN (mg/l)": (0.0, None),
+    "FECAL COLIFORM (MPN/100ml)": (0.0, None),
     "TOTAL COLIFORM (MPN/100ml)Mean": (0.0, None),
 }
 
 # ============================================================
-# PARAMETER-LEVEL GUIDELINE ASSESSMENT (IS 10500:2012)
+# PARAMETER-LEVEL STANDARD CHECK (the WAWQI's own standards)
 # ============================================================
-# Per-parameter check against the applicable drinking-water standard.
-# This is SEPARATE from the aggregate WQI and is NOT a WQI classification.
-# Limits were verified from IS 10500:2012 (Drinking Water - Specification,
-# Second Revision, Reaffirmed 2018; Amendments 1-4 checked) as extracted
-# from the provided bis-wq-standards.pdf. Only parameters with a directly
-# comparable limit return a verdict; the others are reported honestly as
-# "Not assessed" with the reason. DO/Conductivity/BOD are intentionally
-# omitted: IS 10500 prescribes no drinking-water limit for them, and no
-# unit conversion is invented here.
-STANDARDS = [
-    {
-        "field": "PH",
-        "label": "pH",
-        "unit": "pH",
-        "kind": "range",
-        "low": 6.5,
-        "high": 8.5,
-        "provenance": (
-            "IS 10500:2012, Table 1, Sl. No. iii "
-            "(acceptable 6.5-8.5; permissible: no relaxation)"
-        ),
-    },
-    {
-        "field": "Nitrate",
-        "label": "Nitrate + Nitrite",
-        "unit": "mg/l (as N)",
-        "kind": "not_assessed",
-        "reason": (
-            "IS 10500 expresses nitrate as NO3 (mg/l), whereas this input "
-            "is nitrate+nitrite reported as N. The unit bases differ, so no "
-            "comparison is made (conversion not verified)."
-        ),
-        "provenance": "IS 10500:2012, Table 2, Sl. No. xvi",
-    },
-    {
-        "field": "Coliform",
-        "label": "Total Coliform",
-        "unit": "MPN/100ml",
-        "kind": "not_assessed",
-        "reason": (
-            "IS 10500 requires total coliform to be 'not detectable in any "
-            "100 ml sample' (presence/absence), whereas this input is a "
-            "numeric MPN/100 ml count. The method bases differ."
-        ),
-        "provenance": "IS 10500:2012, Table 6",
-    },
-]
+# Each parameter is checked against the SAME permissible value the WAWQI
+# sub-index uses (CPCB Designated Best Use Class A where it exists, otherwise
+# a cited authoritative source - see wawqi.SOURCE). This is a per-parameter
+# view of the index inputs; it is SEPARATE from the aggregate WQI and is NOT a
+# potability certification (the aggregate index and the class bands are).
 
 
-def assess_parameters(values):
-    """Return a per-parameter guideline assessment against IS 10500:2012.
+def assess_parameters(values_by_column):
+    """Per-parameter check against the WAWQI standard for each input.
 
-    Each item is a dict with label/value/unit/status/note/provenance where
-    status is one of: 'within', 'outside', 'not_assessed'. No aggregate or
-    overall verdict is produced here - the WQI classification is separate.
+    ``values_by_column`` maps dataset column -> numeric value. Each item is a
+    dict with label/value/unit/status/note/provenance, where status is
+    'within' or 'outside' the permissible value used by the index. No overall
+    verdict is produced here - the WQI class is separate.
     """
 
     assessments = []
 
-    for spec in STANDARDS:
+    for col in wawqi.PARAMS:
+        val = values_by_column.get(col)
+        s = wawqi.STANDARDS[col]
+        unit = wawqi.UNITS[col]
+        direction = wawqi.DIRECTION[col]
 
-        val = values.get(spec["field"])
+        if direction == "min":
+            std_txt = f"permissible {s:g} {unit} (minimum)"
+            within = val is not None and val >= s
+        elif direction == "two_sided":
+            std_txt = f"permissible band 6.5-8.5 (ideal 7.0)"
+            within = val is not None and 6.5 <= val <= 8.5
+        else:
+            std_txt = f"permissible {s:g} {unit} (maximum)"
+            within = val is not None and val <= s
+
+        q = wawqi.sub_index(col, val) if val is not None else None
 
         item = {
-            "label": spec["label"],
+            "label": LABELS[col],
             "value": val,
-            "unit": spec["unit"],
-            "provenance": spec["provenance"],
+            "unit": unit,
+            "status": "within" if within else "outside",
+            "note": (
+                f"{std_txt}; sub-index q={q:.1f} of 100."
+                if q is not None else f"{std_txt}."
+            ),
+            "provenance": wawqi.SOURCE[col],
         }
-
-        if spec["kind"] == "range" and val is not None:
-            within = spec["low"] <= val <= spec["high"]
-            item["status"] = "within" if within else "outside"
-            item["note"] = (
-                f"Acceptable range {spec['low']}-{spec['high']} {spec['unit']}."
-            )
-        else:
-            item["status"] = "not_assessed"
-            item["note"] = spec.get("reason", "")
-
         assessments.append(item)
 
     return assessments
@@ -209,50 +179,26 @@ def validate_inputs(form):
 # ============================================================
 
 def classify_wqi(wqi):
-    """Map a Water Quality Index value to its rating category.
+    """Classify a Brown WAWQI value into a quality class.
 
-    Conventional five-tier WQI rating scheme used with weighted
-    arithmetic indices:
-
-        0-25    Excellent
-        25-50   Good
-        50-75   Poor
-        75-100  Very Poor
-        >100    Not suitable
-
-    Note on the last class: this project's index is an un-normalised
-    weighted sum whose unit weights total 0.998, so its attainable
-    range is [0, 99.8]. A value above 100 therefore cannot be produced
-    by this index, and the "Not Suitable for Drinking" branch is kept
-    only to preserve the published scheme - it is unreachable in
-    practice.
-
-    The category is an aggregate screening label for overall water
-    quality. It does NOT certify that water is safe to drink; potability
-    requires comparing individual parameters against the applicable
-    regulatory limits.
+    Delegates to wawqi.classify_wqi so the app and the training pipeline share
+    one definition. LOWER is BETTER (0-25 Excellent, 25-50 Good, 50-75 Poor,
+    75-100 Very Poor); q_i = 0 at the ideal value and 100 at the permissible
+    limit, so a lower aggregate index means better water.
     """
 
-    if wqi <= 25:
-        return "Excellent"
-    elif wqi <= 50:
-        return "Good"
-    elif wqi <= 75:
-        return "Poor"
-    elif wqi <= 100:
-        return "Very Poor"
-    else:
-        return "Not Suitable for Drinking"
+    return wawqi.classify_wqi(wqi)
 
 
 # ============================================================
 # GENAI EXPLANATION
 # ============================================================
-def generate_explanation(wqi, data, contribs):
+def generate_explanation(wqi, category, data, contribs):
 
     drivers = "; ".join(
-        f"{c['label']}={c['value']} pushing WQI {c['contribution']:+.2f} "
-        f"from the model average"
+        f"{c['label']}={c['value']} contributed {c['contribution']:+.2f} to "
+        f"the predicted WQI vs the model average "
+        f"({'raised/worsened' if c['contribution'] > 0 else 'lowered/improved'} it)"
         for c in contribs[:3]
     )
 
@@ -261,24 +207,34 @@ def generate_explanation(wqi, data, contribs):
     )
 
     prompt = f"""
-Predicted Water Quality Index (WQI) on a 0-100 scale: {wqi}
+Predicted Water Quality Index (WQI) on a 0-100 scale: {wqi} ({category}).
 
-Note: this WQI is a project-defined aggregate index computed with a
-discrete rating-band methodology (in this scheme a lower value indicates
-better quality). It is a screening indicator, NOT a potability
-certification and NOT a per-parameter regulatory verdict.
+Direction (MUST be respected): this is a Brown-style Weighted Arithmetic WQI -
+the weighted mean of per-parameter sub-indices, each scoring 0 at the ideal
+value and 100 at the permissible limit. A LOWER WQI means BETTER quality and a
+HIGHER WQI means WORSE quality. Classes: 0-25 Excellent, 25-50 Good, 50-75
+Poor, 75-100 Very Poor. This sample scores {wqi}, i.e. "{category}". Because
+higher is worse, describe it consistently with that class: do NOT call a Poor
+or Very Poor index "good", "relatively good", "acceptable" or "safe".
 
 Water parameters:
 {parameters}
 
-Model feature contributions (SHAP) for the three strongest drivers:
+Model contributions (SHAP): these are the amounts each parameter moved the
+MODEL PREDICTION up or down relative to the model average. They are NOT causal
+effects and NOT direct measurements of water quality or safety:
 {drivers}
 
-In 3-4 simple sentences, explain how the parameters above combine to
-produce this WQI value and mention the parameters that most influence it.
-Base the explanation only on the parameters and contributions given above.
-Do not state or imply that this water is safe or unsafe to drink; this
-index is a screening indicator, not a potability certification.
+Framing: this index, its class bands and the per-parameter thresholds are the
+PROJECT'S OWN adopted screening values. "Within" a threshold means within the
+project's selected value only - NOT regulatory compliance and NOT a
+drinking-water safety verdict.
+
+In 3-4 simple sentences, explain how the parameters above combine to produce
+this WQI and its "{category}" class, naming the parameters that contributed most
+to the prediction. Base the explanation ONLY on the value, class, parameters and
+contributions above, and keep the higher-is-worse direction consistent. Do not
+state or imply that this water is safe or unsafe to drink.
 """
 
     try:
@@ -315,6 +271,7 @@ index is a screening indicator, not a potability certification.
 def home():
 
     prediction = None
+    category = None
     explanation = None
     contribs = []
     base = None
@@ -343,11 +300,14 @@ def home():
             prediction = min(max(prediction, 0.0), 100.0)
             prediction = round(prediction, 2)
 
+            # WAWQI quality class (LOWER is BETTER).
+            category = classify_wqi(prediction)
+
             # ------------------------------------------------
-            # PARAMETER-LEVEL GUIDELINE ASSESSMENT (IS 10500:2012)
+            # PARAMETER-LEVEL STANDARD CHECK (WAWQI standards)
             # ------------------------------------------------
 
-            assessments = assess_parameters(values)
+            assessments = assess_parameters(data)
 
             # ------------------------------------------------
             # SHAP - per-prediction feature contributions
@@ -378,6 +338,7 @@ def home():
 
             explanation = generate_explanation(
                 prediction,
+                category,
                 input_data,
                 contribs
             )
@@ -385,6 +346,7 @@ def home():
     return render_template(
         "index.html",
         prediction=prediction,
+        category=category,
         explanation=explanation,
         contribs=contribs,
         base=base,

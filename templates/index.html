@@ -44,8 +44,11 @@
         <label>BOD (mg/L)</label>
         <input type="number" step="any" name="BOD" required>
 
-        <label>Nitrate + Nitrite (mg/L)</label>
+        <label>Nitrate + Nitrite (mg/L, as N)</label>
         <input type="number" step="any" name="Nitrate" required>
+
+        <label>Fecal Coliform (MPN/100ml)</label>
+        <input type="number" step="any" name="FecalColiform" required>
 
         <label>Total Coliform (MPN/100ml)</label>
         <input type="number" step="any" name="Coliform" required>
@@ -63,31 +66,39 @@
 
     <div class="wqi">
         Predicted WQI (0-100 scale): {{ prediction }}
+        {% if category %}&nbsp;&mdash;&nbsp;{{ category }}{% endif %}
     </div>
 
     <p class="wqi-note">
-        The Water Quality Index is a single aggregate value computed with
-        this project's discrete rating-band methodology. It is a screening
-        indicator of overall quality, <strong>not</strong> a per-parameter
-        regulatory verdict and <strong>not</strong> a potability
-        certification (a lower value indicates better quality in this
-        scheme).
+        The Water Quality Index is a <strong>Brown-style Weighted
+        Arithmetic WQI</strong> (weighted mean of per-parameter sub-indices).
+        A <strong>lower</strong> value indicates <strong>better</strong>
+        quality: 0-25 Excellent, 25-50 Good, 50-75 Poor, 75-100 Very Poor.
+        Each sub-index is 0 at the ideal value and 100 at the permissible
+        limit. It is a screening indicator of overall quality, <strong>not</strong>
+        a per-parameter regulatory verdict and <strong>not</strong> a
+        potability certification.
     </p>
 
 </div>
 
 <div class="assessment">
 
-    <h2>Parameter guideline assessment (IS 10500:2012)</h2>
+    <h2>Parameter standard check (permissible values used by the WQI)</h2>
 
     <p class="assessment-note">
-        Each parameter below is checked individually against the applicable
-        BIS drinking-water limit (IS 10500:2012). This table is separate from
-        the WQI above, does <strong>not</strong> certify that the water is
-        safe to drink, and is <strong>not</strong> a WQI classification.
-        Parameters that IS 10500 does not cover for drinking water, or whose
-        unit/method basis differs from the standard, are shown as
-        &quot;Not assessed&quot;.
+        Each parameter below is checked against the same permissible value the
+        WQI sub-index uses. Dissolved oxygen, BOD and total coliform use official
+        <strong>CPCB Class A</strong> limits; <strong>conductivity</strong> and
+        <strong>fecal coliform</strong> are <strong>adopted project
+        thresholds</strong> (CPCB Class A specifies no value for them); nitrate
+        uses a <strong>WHO drinking-water guideline</strong> converted to the
+        as-N basis. The sub-index q shows how far the value sits between the
+        ideal (q=0) and the permissible limit (q=100). &quot;Within/Outside&quot;
+        refers only to these project-selected thresholds - it is
+        <strong>not</strong> regulatory compliance, <strong>not</strong> a
+        potability verdict, and does <strong>not</strong> certify the water is
+        safe to drink.
     </p>
 
     <table class="assessment-table">
@@ -107,8 +118,8 @@
                 <td>{{ a.value if a.value is not none else "—" }}</td>
                 <td>{{ a.unit }}</td>
                 <td class="status-{{ a.status }}">
-                    {% if a.status == "within" %}Within guideline
-                    {% elif a.status == "outside" %}Outside guideline
+                    {% if a.status == "within" %}Within project threshold
+                    {% elif a.status == "outside" %}Outside project threshold
                     {% else %}Not assessed{% endif %}
                 </td>
                 <td>{{ a.note }} ({{ a.provenance }})</td>
@@ -126,7 +137,9 @@
     <p class="shap-note">
         Each value is how far that parameter moved the prediction away
         from the model's average WQI (base value = {{ base | round(2) }}).
-        Positive raises the index, negative lowers it.
+        Because a <strong>lower</strong> WQI is better, a positive
+        contribution makes the water <strong>worse</strong> and a negative
+        one makes it <strong>better</strong>.
     </p>
 
     <table class="shap-table">
