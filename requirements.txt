@@ -6,7 +6,7 @@ scikit-learn==1.9.0
 shap==0.52.0
 joblib==1.5.3
 requests==2.34.2
-
+gunicorn
 # Used by the training notebook (EDA plots and headless execution)
 matplotlib==3.11.1
 seaborn==0.13.2
